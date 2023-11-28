@@ -55,13 +55,11 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		}
 		if task.StartTime == 0 {
-			log.Printf("task=%+v\n", task)
-			panic("bad")
+			log.Fatalf("task=%+v\n", task)
 		}
 		switch task.TaskType {
 		case Map:
-			log.Printf("worker received MAP task, id=%d, key=%s, values=%v, file=%s len(contents)=%d\n",
-				task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
+			// log.Printf("worker received MAP task, id=%d, key=%s, values=%v, file=%s len(contents)=%d\n", task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
 
 			kva := mapf(task.MapFile, task.MapContents)
 
@@ -79,7 +77,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			filepath := getInterFilePath(task.ID, task.MapFile, task.NReduce)
 
-			log.Printf("intermediate file = %s\n", filepath)
+			// log.Printf("intermediate file = %s\n", filepath)
 			err = os.WriteFile(filepath, bytes, 0644)
 			if err != nil {
 				log.Fatal(err)
@@ -89,8 +87,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			// TODO: should send file location with map result to coordinator?
 
 		case Reduce:
-			log.Printf("worker received REDUCE task, id=%d, key=%s, values=%v, file=%s len(contents)=%d \n",
-				task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
+			// log.Printf("worker received REDUCE task, id=%d, key=%s, values=%v, file=%s len(contents)=%d \n",
+			// 	task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
 
 			key, values := task.ReduceKey, task.ReduceValues
 			result := reducef(key, values)

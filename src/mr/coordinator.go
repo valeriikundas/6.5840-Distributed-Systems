@@ -68,35 +68,35 @@ type Coordinator struct {
 // Your code here -- RPC handlers for the worker to call.
 
 func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
-	log.Print("c.mapTasks=")
-	for _, mt := range c.mapTasks {
-		log.Printf("id=%d file=%s state=%d", mt.id, mt.file, mt.state)
-	}
+	// log.Print("c.mapTasks=")
+	// for _, mt := range c.mapTasks {
+	// 	log.Printf("id=%d file=%s state=%d", mt.id, mt.file, mt.state)
+	// }
 
 	// FIXME: feels awkward to pass position, think if it's ok
 	task, i := c.getIdleMapTask()
 	if task != nil {
 		startTime := time.Now()
-		log.Printf("startTime=%v", startTime)
+		// log.Printf("startTime=%v", startTime)
 
 		response.ID = task.ID
 		response.TaskType = Map
 
 		response.StartTime = startTime.UnixMicro()
-		log.Printf("set response.StartTime=%v", response.StartTime)
+		// log.Printf("set response.StartTime=%v", response.StartTime)
 		response.MapFile = task.MapFile
 		response.MapContents = task.MapContents
 		response.NReduce = task.NReduce
 
-		log.Printf(
-			"found idle map task: i=%d id=%d type=%d key=%s values=%v file=%s\n",
-			i, response.ID, response.TaskType, response.ReduceKey,
-			response.ReduceValues, response.MapFile)
+		// log.Printf(
+		// 	"found idle map task: i=%d id=%d type=%d key=%s values=%v file=%s\n",
+		// 	i, response.ID, response.TaskType, response.ReduceKey,
+		// 	response.ReduceValues, response.MapFile)
 
 		c.mu.Lock()
 		c.mapTasks[i].state = InProgress
 		c.mapTasks[i].startTime = startTime
-		log.Printf("just set state=%v start=%v", c.mapTasks[i].state, c.mapTasks[i].startTime)
+		// log.Printf("just set state=%v start=%v", c.mapTasks[i].state, c.mapTasks[i].startTime)
 		c.mu.Unlock()
 
 		return nil
@@ -110,10 +110,10 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		response.ReduceValues = task.ReduceValues
 		response.NReduce = task.NReduce
 
-		log.Printf(
-			"found idle reduce task: i=%d id=%d type=%d key=%s values=%v file=%s\n",
-			i, response.ID, response.TaskType, response.ReduceKey,
-			response.ReduceValues, response.MapFile)
+		// log.Printf(
+		// 	"found idle reduce task: i=%d id=%d type=%d key=%s values=%v file=%s\n",
+		// 	i, response.ID, response.TaskType, response.ReduceKey,
+		// 	response.ReduceValues, response.MapFile)
 
 		c.reduceTasks[i].state = InProgress
 
@@ -242,14 +242,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			for i, t := range c.mapTasks {
 				if t.state == InProgress {
 					if t.startTime.IsZero() {
-						log.Printf("id=%d state=%d start=%v", t.id, t.state, t.startTime)
-						panic("start time should not be nil here")
+						log.Fatalf(" start time should not be nil here : id=%d state=%d start=%v", t.id, t.state, t.startTime)
 					}
 
-					log.Printf("start=%v time since=%v\n", t.startTime, time.Since(t.startTime))
+					// log.Printf("start=%v time since=%v\n", t.startTime, time.Since(t.startTime))
 
 					if time.Since(t.startTime) > time.Second*10 {
-						log.Printf("map task (%d,%s) timed out", t.id, t.file)
+						// log.Printf("map task (%d,%s) timed out", t.id, t.file)
 						c.mu.Lock()
 						c.mapTasks[i].state = Idle
 						c.mapTasks[i].startTime = time.Time{}
@@ -269,7 +268,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 						continue
 					}
 
-					log.Printf("map task (%d,%s) completed", t.id, t.file)
+					// log.Printf("map task (%d,%s) completed", t.id, t.file)
 					c.mu.Lock()
 					c.mapTasks[i].state = Completed
 					c.mu.Unlock()
