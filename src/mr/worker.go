@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/rpc"
 	"os"
+	"path"
 	"time"
 )
 
@@ -41,6 +42,13 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	log.SetFlags(log.Lshortfile)
 
+	if _, err := os.Stat(TempDir); os.IsNotExist(err) {
+		err = os.MkdirAll(TempDir, 0744)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	// repeatedly:
 	//  - send a task request
 	//  - receive completed task response
@@ -59,7 +67,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		switch task.TaskType {
 		case Map:
-			// log.Printf("worker received MAP task, id=%d, key=%s, values=%v, file=%s len(contents)=%d\n", task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
+			log.Printf("worker received MAP task, id=%d, key=%s, values=%v, file=%s len(contents)=%d\n",
+				task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
 
 			kva := mapf(task.MapFile, task.MapContents)
 
@@ -68,43 +77,35 @@ func Worker(mapf func(string, string) []KeyValue,
 				log.Fatal(err)
 			}
 
-			if _, err := os.Stat("./tmp"); os.IsNotExist(err) {
-				err = os.MkdirAll("./tmp", 0744)
-				if err != nil {
-					log.Fatal(err)
-				}
-			}
+			// fixme: should split the output into nReduce separate files
+			
+			filepath := getIntermediateFilePath(task.ID, task.MapFile, task.NReduce)
 
-			filepath := getInterFilePath(task.ID, task.MapFile, task.NReduce)
-
-			// log.Printf("intermediate file = %s\n", filepath)
 			err = os.WriteFile(filepath, bytes, 0644)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			// TODO: how to send result back?
-			// TODO: should send file location with map result to coordinator?
-
 		case Reduce:
-			// log.Printf("worker received REDUCE task, id=%d, key=%s, values=%v, file=%s len(contents)=%d \n",
-			// 	task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
+			log.Printf("worker received REDUCE task, id=%d, key=%s, values=%v, file=%s len(contents)=%d \n",
+				task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
 
 			key, values := task.ReduceKey, task.ReduceValues
 			result := reducef(key, values)
 
-			oname := "mr-out-1"
-			ofile, _ := os.Create(oname)
+			outputName := fmt.Sprintf("mr-out-%d", task.ID)
+			outputPath := path.Join(TempDir, outputName)
+			ofile, err := os.Create(outputPath)
+			defer ofile.Close()
+			if err != nil {
+				log.Fatal(err)
+			}
 
 			fmt.Fprintf(ofile, "%v %v\n", key, result)
 		}
 
 		time.Sleep(time.Second)
 	}
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 }
 
 func CallTaskRequest() *Task {
@@ -113,8 +114,6 @@ func CallTaskRequest() *Task {
 
 	ok := call("Coordinator.TaskRequest", &args, &task)
 	if ok {
-		fmt.Printf("task received - id=%v type=%v key=%v file=%v start=%v\n",
-			task.ID, task.TaskType, task.ReduceKey, task.MapFile, task.StartTime)
 		return &task
 	} else {
 		fmt.Println("rpc call failed")
