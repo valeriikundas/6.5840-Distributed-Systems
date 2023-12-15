@@ -5,18 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-const TempDir = "./mr-tmp"
+// fixme: don't like absolute path of my pc, change to some temp dir
+const TempDir = "/Users/user/Code/courses/distrubuted_systems_6.5840/src/main/mr-tmp"
 
 type TaskState int
 
@@ -42,33 +45,60 @@ type ReduceTask struct {
 	state     TaskState
 	startTime time.Time
 
-	key    string
-	values []string
+	key string
 
 	nReduce int
 }
 
-// type Intermediate struct {
-// 	location string
-// 	size     int
-// }
+func (r ReduceTask) isInProgress() bool {
+	return r.state == TaskStateInProgress
+}
 
-// type WorkerStruct struct {
-// }
+func (r ReduceTask) didTimeout() bool {
+	return time.Since(r.startTime) > time.Second*10
+}
+
+func (r ReduceTask) getOutputFilePath() string {
+	return getReduceFileName(r.id)
+}
+
+func (r ReduceTask) markIdle(c *Coordinator, i int) {
+	c.mu.Lock()
+	c.reduceTasks[i].state = TaskStateIdle
+	c.reduceTasks[i].startTime = time.Time{}
+	c.mu.Unlock()
+}
+
+func (r ReduceTask) markDone(c *Coordinator, i int) {
+	c.mu.Lock()
+	c.reduceTasks[i].state = TaskStateCompleted
+	c.mu.Unlock()
+}
+
+type ShuffleState int
+
+const (
+	ShuffleStateNotStarted ShuffleState = iota
+	ShuffleStateStarted
+	ShuffleStateDone
+)
 
 type Coordinator struct {
 	// Your definitions here.
 
-	// FIXME: add mutexes for shared data editing
 	mu          sync.Mutex
 	mapTasks    []MapTask
 	reduceTasks []ReduceTask
 
-	// NOTE: will be stored on disk
-	// intermediateFiles Intermediate
-
-	// workers WorkerStruct
+	nReduce      int
+	shuffleState ShuffleState
 }
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -86,9 +116,8 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		response.NReduce = task.NReduce
 
 		log.Printf(
-			"found idle map task: i=%d id=%d type=%d key=%s values=%v file=%s\n",
-			i, response.ID, response.TaskType, response.ReduceKey,
-			response.ReduceValues, response.MapFile)
+			"found idle map task: i=%d id=%d type=%d key=%s  file=%s\n",
+			i, response.ID, response.TaskType, response.ReduceKey, response.MapFile)
 
 		c.mu.Lock()
 		c.mapTasks[i].state = TaskStateInProgress
@@ -100,19 +129,27 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 
 	log.Printf("all map tasks are done")
 
+	//fixme: recall on mutexes usage, are there problems with concurrency here?
+	c.mu.Lock()
+	if c.shuffleState == ShuffleStateNotStarted {
+		c.shuffleState = ShuffleStateStarted
+
+		c.shuffleIntermediateData()
+		c.shuffleState = ShuffleStateDone
+	}
+	c.mu.Unlock()
+
 	task, i = c.getIdleReduceTask()
 	if task != nil {
 		response.ID = task.ID
 		response.TaskType = Reduce
 		response.StartTime = startTime.UnixMicro()
 		response.ReduceKey = task.ReduceKey
-		response.ReduceValues = task.ReduceValues
 		response.NReduce = task.NReduce
 
 		log.Printf(
-			"found idle reduce task: i=%d id=%d type=%d key=%s values=%v file=%s\n",
-			i, response.ID, response.TaskType, response.ReduceKey,
-			response.ReduceValues, response.MapFile)
+			"found idle reduce task: i=%d id=%d type=%d key=%s",
+			i, response.ID, response.TaskType, response.ReduceKey)
 
 		c.mu.Lock()
 		c.reduceTasks[i].state = TaskStateInProgress
@@ -122,11 +159,88 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
+	log.Printf("all reduce tasks are done")
+
 	// FIXME: ending does not work as it should
 	if c.Done() {
 		return nil
 	}
 	return errors.New("idle task not found")
+}
+
+func (c *Coordinator) shuffleIntermediateData() {
+	dirEntries, err := os.ReadDir(TempDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// todo: implement external sort
+	intermediateData := make([]KeyValue, 0)
+	for _, entry := range dirEntries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") || !strings.HasPrefix(name, "mr-int") {
+			continue
+		}
+
+		filepath := path.Join(TempDir, name)
+		v, err := readJSONFile[[]KeyValue](filepath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		intermediateData = append(intermediateData, *v...)
+	}
+
+	sort.Sort(ByKey(intermediateData))
+
+	bucketID := 0
+	bucketSize := len(intermediateData) / c.nReduce // todo: probably can `divide by len(c.mapTasks) additionally`
+	for i := 0; i < len(intermediateData); {
+		bucket := make([]KeyValue, 0, bucketSize)
+
+		j := i + bucketSize + 1
+		for ; j < len(intermediateData) && intermediateData[j].Key == intermediateData[i].Key; j += 1 {
+		}
+
+		bucket = append(bucket, intermediateData[i:j-1]...)
+
+		//fixme: not working, has same word in neighbor files
+		log.Printf("bucket indices %d %d", i, j)
+
+		name := fmt.Sprintf("mr-sorted-%d.json", bucketID)
+		bucketID += 1
+
+		filepath := path.Join(TempDir, name)
+
+		file, err := os.Create(filepath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		bucketEncoder := json.NewEncoder(file)
+		err = bucketEncoder.Encode(bucket)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		i = j
+	}
+}
+
+func readJSONFile[R any](filepath string) (*R, error) {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	var v R
+	err = decoder.Decode(&v)
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 func (c *Coordinator) getIdleMapTask() (*Task, int) {
@@ -161,11 +275,10 @@ func (c *Coordinator) getIdleReduceTask() (*Task, int) {
 	if idleReduceTaskIndex != -1 {
 		reduceTask := c.reduceTasks[idleReduceTaskIndex]
 		return &Task{
-			ID:           reduceTask.id,
-			TaskType:     Reduce,
-			ReduceKey:    reduceTask.key,
-			ReduceValues: reduceTask.values,
-			NReduce:      reduceTask.nReduce,
+			ID:        reduceTask.id,
+			TaskType:  Reduce,
+			ReduceKey: reduceTask.key,
+			NReduce:   reduceTask.nReduce,
 		}, idleReduceTaskIndex
 	}
 	return nil, 0
@@ -198,9 +311,24 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	for _, t := range c.mapTasks {
 		if t.state != TaskStateCompleted {
+			log.Println("Map tasks are not done")
 			return false
 		}
 	}
+	log.Println("Map tasks are done")
+
+	reduceTasksCompletion := make([]bool, len(c.reduceTasks))
+	for i, task := range c.reduceTasks {
+		reduceTasksCompletion[i] = task.state == TaskStateCompleted
+	}
+
+	for _, task := range c.reduceTasks {
+		if task.state != TaskStateCompleted {
+			log.Println("Reduce tasks are not done")
+			return false
+		}
+	}
+	log.Println("Reduce tasks are done")
 
 	return true
 }
@@ -213,6 +341,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	log.SetFlags(log.Lshortfile)
+
+	// todo: remove temp dir before starting
 
 	if _, err := os.Stat(TempDir); os.IsNotExist(err) {
 		err = os.MkdirAll(TempDir, 0744)
@@ -229,6 +359,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 		contents := string(bytes)
 
+		// todo: should lock here?
 		c.mapTasks = append(c.mapTasks, MapTask{
 			id:       getNextID(),
 			state:    TaskStateIdle,
@@ -238,57 +369,22 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		})
 	}
 
+	c.nReduce = nReduce
+
 	/*
 		create reduce tasks
-		nReduce
+		amount = nReduce
 		filter by file name
 	*/
 	for i := 0; i < nReduce; i += 1 {
-		dirEntries, err := os.ReadDir(TempDir)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		var curReduceTaskFiles []string
-		for _, entry := range dirEntries {
-
-			filename := entry.Name()
-			if strings.HasSuffix(filename, fmt.Sprintf("%d.json", i)) {
-				curReduceTaskFiles = append(curReduceTaskFiles, filename)
-			}
-		}
-
-		log.Printf("len(curReduceTaskFiles)=%d, %v", len(curReduceTaskFiles), curReduceTaskFiles)
-
-		for _, reduceTaskFile := range curReduceTaskFiles {
-			b, err := os.ReadFile(reduceTaskFile)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			var kva []struct {
-				Key, Value string
-			}
-			err = json.Unmarshal(b, &kva)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			log.Printf("kva=%+v", kva)
-			break
-		}
-
-		reduceKey := strconv.Itoa(i) //todo:
-		reduceValues := []string{}   //todo:
+		reduceKey := strconv.Itoa(i)
 		c.reduceTasks = append(c.reduceTasks, ReduceTask{
 			id:        i,
 			state:     TaskStateIdle,
 			startTime: time.Time{},
 			key:       reduceKey,
-			values:    reduceValues,
 			nReduce:   nReduce,
 		})
-		log.Printf("created reduce task #%d", i)
 	}
 
 	// goroutine for checking timed out and done tasks
@@ -298,9 +394,9 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 				checkTimeout(&c, t, i)
 			}
 
-			// for i, t := range c.reduceTasks {
-			// 	checkTimeout(&c, t, i)
-			// }
+			for i, t := range c.reduceTasks {
+				checkTimeout(&c, t, i)
+			}
 
 			time.Sleep(time.Second)
 		}
@@ -315,7 +411,9 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.server()
 
 	defer func() {
-// clean
+		// clean
+
+		// todo: delete mr-tmp completely
 
 		dirEntries, err := os.ReadDir(TempDir)
 		if err != nil {
@@ -340,33 +438,60 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &c
 }
 
-type TaskInterface interface{}
+// fixme: how to name interfaces?
+type ITask interface {
+	isInProgress() bool
+	didTimeout() bool
+	getOutputFilePath() string
+	markIdle(c *Coordinator, i int)
+	markDone(c *Coordinator, i int)
+}
 
-func checkTimeout(c *Coordinator, t MapTask, i int) {
-	if t.state == TaskStateInProgress {
-		if t.startTime.IsZero() {
-			log.Fatalf("start time should not be nil here : id=%d state=%d start=%v", t.id, t.state, t.startTime)
-		}
+func (t MapTask) isInProgress() bool {
+	isInProgress := t.state == TaskStateInProgress
 
-		// log.Printf("start=%v time since=%v\n", t.startTime, time.Since(t.startTime))
+	if isInProgress && t.startTime.IsZero() {
+		panic("startTime is zero, but should not be")
+	}
 
-		// task timed out
-		if time.Since(t.startTime) > time.Second*10 {
-			// log.Printf("map task (%d,%s) timed out", t.id, t.file)
-			c.mu.Lock()
-			c.mapTasks[i].state = TaskStateIdle
-			c.mapTasks[i].startTime = time.Time{}
-			c.mu.Unlock()
+	return isInProgress
+}
+
+func (t MapTask) didTimeout() bool {
+	return time.Since(t.startTime) > time.Second*10
+}
+
+func (t MapTask) getOutputFilePath() string {
+	return getIntermediateFilePath(t.id, t.file, t.nReduce)
+}
+
+func (t MapTask) markIdle(c *Coordinator, i int) {
+	c.mu.Lock()
+	c.mapTasks[i].state = TaskStateIdle
+	c.mapTasks[i].startTime = time.Time{}
+	c.mu.Unlock()
+}
+
+func (t MapTask) markDone(c *Coordinator, i int) {
+	c.mu.Lock()
+	c.mapTasks[i].state = TaskStateCompleted
+	c.mu.Unlock()
+}
+
+func checkTimeout[T ITask](c *Coordinator, t T, i int) {
+	if t.isInProgress() {
+		taskTimedOut := t.didTimeout()
+		if taskTimedOut {
+			t.markIdle(c, i)
 			return
 		}
 
 		// todo: implement different completion conditions for map and reduce task
-
-		filepath := getIntermediateFilePath(t.id, t.file, t.nReduce)
-
+		filepath := t.getOutputFilePath()
 		_, err := os.Stat(filepath)
 		if err != nil {
 			if os.IsNotExist(err) {
+				slog.Debug("file does not exist", "error", err, "filepath", filepath)
 				log.Printf("file does not exist %s", filepath)
 			} else {
 				log.Printf("error checking file %s. details: %s", filepath, err)
@@ -375,12 +500,7 @@ func checkTimeout(c *Coordinator, t MapTask, i int) {
 			return
 		}
 
-		// intermediate file exists -> task considered done
-		// log.Printf("map task (%d,%s) completed", t.id, t.file)
-		c.mu.Lock()
-		c.mapTasks[i].state = TaskStateCompleted
-		c.mu.Unlock()
-
+		t.markDone(c, i)
 	}
 }
 
@@ -404,7 +524,11 @@ func assertMapTasksAreDone(c *Coordinator) {
 
 func getIntermediateFilePath(id int, file string, nReduce int) string {
 	mapTaskID := id
-	reduceTaskID := ihash(file) % nReduce
+
+	reduceTaskID := 0
+	// todo: when intermediate files will be split into nReduce files, then this should be uncommented
+	//reduceTaskID := ihash(file) % nReduce
+
 	filename := fmt.Sprintf("mr-int-%d-%d.json", mapTaskID, reduceTaskID)
 	filepath := path.Join(TempDir, filename)
 	return filepath

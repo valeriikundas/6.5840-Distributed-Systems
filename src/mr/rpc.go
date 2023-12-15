@@ -44,8 +44,9 @@ type Task struct {
 	MapFile     string
 	MapContents string
 
-	ReduceKey    string
-	ReduceValues []string
+	ReduceKey string
+	// todo: will be populated on task call. is this ok?
+	// ReduceValues []string
 
 	NReduce int
 }
@@ -57,7 +58,7 @@ func (t *Task) IsZero() bool {
 		t.MapFile == "" &&
 		t.MapContents == "" &&
 		t.ReduceKey == "" &&
-		t.ReduceValues == nil &&
+		// t.ReduceValues == nil &&
 		t.NReduce == 0
 }
 

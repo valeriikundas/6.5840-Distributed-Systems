@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"log/slog"
 	"math/rand"
 	"net/rpc"
 	"os"
@@ -60,6 +61,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		task := CallTaskRequest()
 		if task == nil || task.IsZero() {
 			// nil means all is done, exit
+			log.Print("no new task received. exiting...")
 			return
 		}
 		if task.StartTime == 0 {
@@ -67,8 +69,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		switch task.TaskType {
 		case Map:
-			log.Printf("worker received MAP task, id=%d, key=%s, values=%v, file=%s len(contents)=%d\n",
-				task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
+			log.Printf("worker received MAP task, id=%d, key=%s, file=%s len(contents)=%d\n",
+				task.ID, task.ReduceKey, task.MapFile, len(task.MapContents))
 
 			kva := mapf(task.MapFile, task.MapContents)
 
@@ -78,7 +80,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			// fixme: should split the output into nReduce separate files
-			
+
 			filepath := getIntermediateFilePath(task.ID, task.MapFile, task.NReduce)
 
 			err = os.WriteFile(filepath, bytes, 0644)
@@ -87,25 +89,85 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 		case Reduce:
-			log.Printf("worker received REDUCE task, id=%d, key=%s, values=%v, file=%s len(contents)=%d \n",
-				task.ID, task.ReduceKey, task.ReduceValues, task.MapFile, len(task.MapContents))
+			log.Printf("worker received REDUCE task, id=%d, key=%s, file=%s len(contents)=%d \n",
+				task.ID, task.ReduceKey, task.MapFile, len(task.MapContents))
 
-			key, values := task.ReduceKey, task.ReduceValues
-			result := reducef(key, values)
+			taskID := task.ID
 
-			outputName := fmt.Sprintf("mr-out-%d", task.ID)
-			outputPath := path.Join(TempDir, outputName)
-			ofile, err := os.Create(outputPath)
-			defer ofile.Close()
+			filepath := path.Join(TempDir, fmt.Sprintf("mr-sorted-%d.json", taskID))
+			file, err := os.Open(filepath)
+			if err != nil {
+				slog.Debug("open file error", "error", err, "filepath", filepath)
+				log.Fatal(err)
+			}
+
+			fileDecoder := json.NewDecoder(file)
+			var keyValues []KeyValue
+			err = fileDecoder.Decode(&keyValues)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			fmt.Fprintf(ofile, "%v %v\n", key, result)
+			// todo: write to file once
+			//buffer := new(bytes.Buffer)
+
+			i := 0
+			for i < len(keyValues) {
+				keyValue := keyValues[i]
+				j := i + 1
+				for j < len(keyValues) && keyValues[j].Key == keyValue.Key {
+					j += 1
+				}
+
+				var values []string
+				for k := i; k < j; k++ {
+					values = append(values, keyValue.Value)
+				}
+
+				result := reducef(keyValue.Key, values)
+
+				//fixme: refactor to write to file once
+				//buffer.WriteString(fmt.Sprintf("%v %v", keyValue.Key, result))
+
+				outputPath := getReduceFileName(task.ID)
+				err = writeFile(outputPath, keyValue.Key, result)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				i = j
+			}
+
 		}
 
 		time.Sleep(time.Second)
 	}
+}
+
+func getReduceFileName(taskID int) string {
+	outputName := fmt.Sprintf("mr-out-%d", taskID)
+	outputPath := path.Join(TempDir, outputName)
+	return outputPath
+}
+
+func writeFile(filepath string, key string, result string) error {
+	file, err := os.OpenFile(filepath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	_, err = fmt.Fprintf(file, "%v %v\n", key, result)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return nil
 }
 
 func CallTaskRequest() *Task {
