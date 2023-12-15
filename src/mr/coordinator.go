@@ -309,7 +309,8 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	for _, t := range c.mapTasks {
 		if t.state != TaskStateCompleted {
-			log.Println("Map tasks are not done")
+			// todo: create custom logger, add log everything to it, don't use default logger
+			//log.Println("Map tasks are not done")
 			return false
 		}
 	}
