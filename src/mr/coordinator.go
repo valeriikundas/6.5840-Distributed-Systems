@@ -10,6 +10,7 @@ import (
 	"net/rpc"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 )
 
 // fixme: don't like absolute path of my pc, change to some temp dir
+const SrcDir = "/Users/user/Code/courses/distrubuted_systems_6.5840/src/"
 const TempDir = "/Users/user/Code/courses/distrubuted_systems_6.5840/src/main/mr-tmp"
 
 type TaskState int
@@ -339,7 +341,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	log.SetFlags(log.Lshortfile)
+
+	setupLogging("coordinator")
 
 	err := os.RemoveAll(TempDir)
 	if err != nil {
@@ -433,6 +436,28 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}()
 
 	return &c
+}
+
+func setupLogging(kind string) {
+	subDirName := kind[0:1]
+	logFolderPath := filepath.Join(SrcDir, "logs", subDirName)
+
+	err := os.MkdirAll(logFolderPath, 0700)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	logFileTime := time.Now().Format("2006_01_02_15_04_05")
+
+	logFileName := fmt.Sprintf("%s.log", logFileTime)
+	logFilePath := filepath.Join(logFolderPath, logFileName)
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.SetFlags(log.Lshortfile)
+	log.SetOutput(logFile)
 }
 
 // fixme: how to name interfaces?

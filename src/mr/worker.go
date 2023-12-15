@@ -41,7 +41,7 @@ func randSequence(n int) string {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	log.SetFlags(log.Lshortfile)
+	setupLogging("worker")
 
 	if _, err := os.Stat(TempDir); os.IsNotExist(err) {
 		err = os.MkdirAll(TempDir, 0744)
@@ -146,12 +146,12 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func getReduceFileName(taskID int) string {
 	outputName := fmt.Sprintf("mr-out-%d", taskID)
-	outputPath := path.Join(TempDir, outputName)
+	outputPath := outputName // path.Join(TempDir, outputName)
 	return outputPath
 }
 
 func writeFile(filepath string, key string, result string) error {
-	file, err := os.OpenFile(filepath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	file, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return err
 	}
@@ -167,6 +167,7 @@ func writeFile(filepath string, key string, result string) error {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	return nil
 }
 
