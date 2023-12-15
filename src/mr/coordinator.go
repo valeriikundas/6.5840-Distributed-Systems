@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -161,7 +160,6 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 
 	log.Printf("all reduce tasks are done")
 
-	// FIXME: ending does not work as it should
 	if c.Done() {
 		return nil
 	}
@@ -198,20 +196,20 @@ func (c *Coordinator) shuffleIntermediateData() {
 	for i := 0; i < len(intermediateData); {
 		bucket := make([]KeyValue, 0, bucketSize)
 
-		j := i + bucketSize + 1
-		for ; j < len(intermediateData) && intermediateData[j].Key == intermediateData[i].Key; j += 1 {
+		initialJ := i + bucketSize
+		j := initialJ
+		for j < len(intermediateData) && intermediateData[j].Key == intermediateData[initialJ].Key {
+			j += 1
 		}
 
-		bucket = append(bucket, intermediateData[i:j-1]...)
+		bucket = append(bucket, intermediateData[i:j]...)
 
-		//fixme: not working, has same word in neighbor files
 		log.Printf("bucket indices %d %d", i, j)
 
 		name := fmt.Sprintf("mr-sorted-%d.json", bucketID)
 		bucketID += 1
 
 		filepath := path.Join(TempDir, name)
-
 		file, err := os.Create(filepath)
 		if err != nil {
 			log.Fatal(err)
@@ -342,9 +340,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	log.SetFlags(log.Lshortfile)
 
-	// todo: remove temp dir before starting
+	err := os.RemoveAll(TempDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	if _, err := os.Stat(TempDir); os.IsNotExist(err) {
+	if _, err = os.Stat(TempDir); os.IsNotExist(err) {
 		err = os.MkdirAll(TempDir, 0744)
 		if err != nil {
 			log.Fatal(err)
@@ -403,17 +404,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}()
 
 	// TODO: check that timeouts work
-	// TODO: when all map tasks is done, continue
-	// TODO: sort by keys
-	// TODO: implement reduce
 
 	log.Println("server starting")
 	c.server()
 
 	defer func() {
 		// clean
-
-		// todo: delete mr-tmp completely
 
 		dirEntries, err := os.ReadDir(TempDir)
 		if err != nil {
@@ -486,13 +482,11 @@ func checkTimeout[T ITask](c *Coordinator, t T, i int) {
 			return
 		}
 
-		// todo: implement different completion conditions for map and reduce task
 		filepath := t.getOutputFilePath()
 		_, err := os.Stat(filepath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				slog.Debug("file does not exist", "error", err, "filepath", filepath)
-				log.Printf("file does not exist %s", filepath)
+				log.Printf("Reduce file does not exist, so task is not finished")
 			} else {
 				log.Printf("error checking file %s. details: %s", filepath, err)
 			}
