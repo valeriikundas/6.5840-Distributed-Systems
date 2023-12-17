@@ -3,6 +3,7 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	errors "github.com/pkg/errors"
 	"hash/fnv"
 	"log"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/rpc"
 	"os"
 	"path"
+	filepath2 "path/filepath"
 	"time"
 )
 
@@ -145,15 +147,26 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func getReduceFileName(taskID int) string {
-	outputName := fmt.Sprintf("mr-out-%d", taskID)
-	outputPath := outputName // path.Join(TempDir, outputName)
+	outputName := fmt.Sprintf("mr-out-%d.txt", taskID)
+	outputPath := path.Join("..", outputName)
 	return outputPath
 }
 
 func writeFile(filepath string, key string, result string) error {
-	file, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	fp, err := filepath2.Abs(filepath)
 	if err != nil {
-		return err
+		log.Fatal(err)
+	}
+	fmt.Printf("full file path = %v\n", fp)
+
+	err = os.MkdirAll(TempDir, 0666)
+	if err != nil {
+		return errors.Wrap(err, "os.MkdirAll")
+	}
+
+	file, err := os.OpenFile(fp, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
+	if err != nil {
+		return errors.Wrap(err, "OpenFile error")
 	}
 
 	defer func() {
@@ -165,7 +178,7 @@ func writeFile(filepath string, key string, result string) error {
 
 	_, err = fmt.Fprintf(file, "%v %v\n", key, result)
 	if err != nil {
-		log.Fatal(err)
+		return errors.Wrap(err, "file write error")
 	}
 
 	return nil

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -456,8 +457,10 @@ func setupLogging(kind string) {
 		log.Fatal(err)
 	}
 
-	log.SetFlags(log.Lshortfile)
-	log.SetOutput(logFile)
+	log.SetFlags(log.Lshortfile | log.Ltime)
+
+	multiWriter := io.MultiWriter(logFile, os.Stdout)
+	log.SetOutput(multiWriter)
 }
 
 // fixme: how to name interfaces?
