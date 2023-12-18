@@ -11,7 +11,7 @@ import (
 	"net/rpc"
 	"os"
 	"path"
-	filepath2 "path/filepath"
+	filepathLib "path/filepath"
 	"time"
 )
 
@@ -63,7 +63,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		task := CallTaskRequest()
 		if task == nil || task.IsZero() {
 			// nil means all is done, exit
-			log.Print("no new task received. exiting...")
+			log.Print("empty task received -> exiting...")
 			return
 		}
 		if task.StartTime == 0 {
@@ -75,6 +75,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				task.ID, task.ReduceKey, task.MapFile, len(task.MapContents))
 
 			kva := mapf(task.MapFile, task.MapContents)
+			// fixme: why does 'kva' here contain key='', I think it should be filtered out by strings.FieldsFunc in mapf
 
 			bytes, err := json.Marshal(kva)
 			if err != nil {
@@ -111,7 +112,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			// todo: write to file once
-			//buffer := new(bytes.Buffer)
+			// buffer := new(bytes.Buffer)
 
 			i := 0
 			for i < len(keyValues) {
@@ -131,10 +132,13 @@ func Worker(mapf func(string, string) []KeyValue,
 				//fixme: refactor to write to file once
 				//buffer.WriteString(fmt.Sprintf("%v %v", keyValue.Key, result))
 
-				outputPath := getReduceFileName(task.ID)
-				err = writeFile(outputPath, keyValue.Key, result)
-				if err != nil {
-					log.Fatal(err)
+				reduceFilePath := getReduceFileName(task.ID)
+
+				if keyValue.Key != "" {
+					err = appendReduceFile(reduceFilePath, keyValue.Key, result)
+					if err != nil {
+						log.Fatal(err)
+					}
 				}
 
 				i = j
@@ -147,24 +151,20 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func getReduceFileName(taskID int) string {
-	outputName := fmt.Sprintf("mr-out-%d.txt", taskID)
-	outputPath := path.Join("..", outputName)
+	outputName := fmt.Sprintf("mr-out-%d", taskID)
+	//outputPath := path.Join("..", outputName)
+	outputPath := outputName
 	return outputPath
 }
 
-func writeFile(filepath string, key string, result string) error {
-	fp, err := filepath2.Abs(filepath)
+func appendReduceFile(filepath string, key string, result string) error {
+	absoluteFilePath, err := filepathLib.Abs(filepath)
 	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("full file path = %v\n", fp)
-
-	err = os.MkdirAll(TempDir, 0666)
-	if err != nil {
-		return errors.Wrap(err, "os.MkdirAll")
+		return err
 	}
 
-	file, err := os.OpenFile(fp, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
+	// todo: check if it will work without absolute path
+	file, err := os.OpenFile(absoluteFilePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
 	if err != nil {
 		return errors.Wrap(err, "OpenFile error")
 	}
@@ -192,7 +192,7 @@ func CallTaskRequest() *Task {
 	if ok {
 		return &task
 	} else {
-		fmt.Println("rpc call failed")
+		log.Print("rpc call failed")
 		return nil
 	}
 }
@@ -232,6 +232,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
+		// WIP: handle ending better
 		log.Fatal("dialing:", err)
 	}
 	defer c.Close()
@@ -241,6 +242,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	log.Print("rpc client call error", err)
 	return false
 }

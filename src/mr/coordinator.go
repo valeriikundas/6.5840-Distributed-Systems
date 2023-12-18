@@ -129,7 +129,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
-	log.Printf("all map tasks are done")
+	log.Print("all map tasks are done")
 
 	//fixme: recall on mutexes usage, are there problems with concurrency here?
 	c.mu.Lock()
@@ -161,12 +161,13 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
-	log.Printf("all reduce tasks are done")
+	log.Print("all reduce tasks are done")
 
 	if c.Done() {
 		return nil
 	}
-	return errors.New("idle task not found")
+
+	return errors.New("idle task not found and c.Done() is false")
 }
 
 func (c *Coordinator) shuffleIntermediateData() {
@@ -345,12 +346,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	setupLogging("coordinator")
 
-	err := os.RemoveAll(TempDir)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err = os.Stat(TempDir); os.IsNotExist(err) {
+	if _, err := os.Stat(TempDir); os.IsNotExist(err) {
 		err = os.MkdirAll(TempDir, 0744)
 		if err != nil {
 			log.Fatal(err)
@@ -511,13 +507,13 @@ func checkTimeout[T ITask](c *Coordinator, t T, i int) {
 			return
 		}
 
-		filepath := t.getOutputFilePath()
-		_, err := os.Stat(filepath)
+		outputFilepath := t.getOutputFilePath()
+		_, err := os.Stat(outputFilepath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				log.Printf("Reduce file does not exist, so task is not finished")
 			} else {
-				log.Printf("error checking file %s. details: %s", filepath, err)
+				log.Printf("error checking file %s. details: %s", outputFilepath, err)
 			}
 
 			return
@@ -553,8 +549,8 @@ func getIntermediateFilePath(id int, file string, nReduce int) string {
 	//reduceTaskID := ihash(file) % nReduce
 
 	filename := fmt.Sprintf("mr-int-%d-%d.json", mapTaskID, reduceTaskID)
-	filepath := path.Join(TempDir, filename)
-	return filepath
+	filePath := path.Join(TempDir, filename)
+	return filePath
 }
 
 var gID = 0
