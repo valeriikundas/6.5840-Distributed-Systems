@@ -129,7 +129,26 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
-	log.Print("all map tasks are done")
+	for {
+		debug("waiting for map tasks to be done")
+		done := true
+		for _, mapTask := range c.mapTasks {
+			if mapTask.state != TaskStateCompleted {
+				done = false
+				break
+			}
+		}
+		if done {
+			debug("all map tasks are done")
+			break
+		}
+		time.Sleep(time.Second)
+	}
+
+	//next: shuffle is starting when map files are not ready yet, why?
+	// ok, so there's no idle task, but that doesn't mean all tasks are done
+	// - [ ] should wait for all map tasks to be done here
+	// - [ ] same for reduce tasks a bit lower
 
 	//fixme: recall on mutexes usage, are there problems with concurrency here?
 	c.mu.Lock()
@@ -141,6 +160,8 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	}
 	c.mu.Unlock()
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	task, i = c.getIdleReduceTask()
 	if task != nil {
 		response.ID = task.ID
@@ -153,21 +174,38 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 			"found idle reduce task: i=%d id=%d type=%d key=%s",
 			i, response.ID, response.TaskType, response.ReduceKey)
 
-		c.mu.Lock()
 		c.reduceTasks[i].state = TaskStateInProgress
 		c.reduceTasks[i].startTime = startTime
-		c.mu.Unlock()
 
 		return nil
 	}
 
+	for {
+		debug("waiting for reduce tasks to be done")
+		done := true
+		for _, reduceTask := range c.reduceTasks {
+			if reduceTask.state != TaskStateCompleted {
+				done = false
+				break
+			}
+		}
+		debug("check if done")
+		if done {
+			debug("all reduce tasks are done")
+			break
+		}
+		debug("time sleep")
+		time.Sleep(time.Second)
+	}
+
+	// fixme: next line is not printed out. why?
+	debug("afterwards: reduce tasks done")
 	log.Print("all reduce tasks are done")
 
 	if c.Done() {
 		return nil
 	}
 
-	// WIP: FIXME: this was called. why? debug
 	log.Print("no idle task found. all are in progress")
 	return nil
 }
@@ -177,6 +215,8 @@ func (c *Coordinator) shuffleIntermediateData() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	debug("dirEntries=%v", dirEntries)
 
 	// todo: implement external sort
 	intermediateData := make([]KeyValue, 0)
@@ -197,8 +237,11 @@ func (c *Coordinator) shuffleIntermediateData() {
 
 	sort.Sort(ByKey(intermediateData))
 
+	debug("intermediateData=%v", intermediateData)
+
 	bucketID := 0
 	bucketSize := len(intermediateData) / c.nReduce // todo: probably can `divide by len(c.mapTasks) additionally`
+	debug("bucketSize=%v", bucketSize)
 	for i := 0; i < len(intermediateData); {
 		bucket := make([]KeyValue, 0, bucketSize)
 
@@ -210,6 +253,7 @@ func (c *Coordinator) shuffleIntermediateData() {
 
 		bucket = append(bucket, intermediateData[i:j]...)
 
+		debug("*** bucket indices: %v %v len=%v", i, j, len(intermediateData))
 		log.Printf("bucket indices %d %d", i, j)
 
 		name := fmt.Sprintf("mr-sorted-%d.json", bucketID)
@@ -247,6 +291,7 @@ func readJSONFile[R any](filepath string) (*R, error) {
 	return &v, nil
 }
 
+// fixme: can rewrite these functions to `remainingTasks` array field in coordinator
 func (c *Coordinator) getIdleMapTask() (*Task, int) {
 	idleMapTaskIndex := -1
 	for i := 0; i < len(c.mapTasks); i += 1 {
@@ -411,30 +456,17 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	log.Println("server starting")
 	c.server()
 
-	defer func() {
-		// clean
-
-		dirEntries, err := os.ReadDir(TempDir)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		tobedeleted := []string{}
-		for _, e := range dirEntries {
-			if strings.HasPrefix(e.Name(), "mr-int-") {
-				tobedeleted = append(tobedeleted, e.Name())
-			}
-		}
-
-		for _, name := range tobedeleted {
-			err = os.Remove(path.Join("mr-tmp/", name))
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-	}()
-
 	return &c
+}
+
+const debugEnabled = false
+
+func debug(format string, v ...any) {
+	if !debugEnabled {
+		return
+	}
+
+	fmt.Printf(fmt.Sprintf("DEBUG: %s\n", format), v...)
 }
 
 func setupLogging(kind string) {

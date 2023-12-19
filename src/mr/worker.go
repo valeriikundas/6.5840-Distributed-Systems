@@ -61,6 +61,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	for {
 		task := CallTaskRequest()
+		// fixme: task.isZero() condition probably can never happen. delete?
 		if task == nil || task.IsZero() {
 			// nil means all is done, exit
 			log.Print("empty task received -> exiting...")
@@ -176,6 +177,8 @@ func appendReduceFile(filepath string, key string, result string) error {
 		}
 	}()
 
+	debug("appendReduceFile: %v %v %v", filepath, key, result)
+
 	_, err = fmt.Fprintf(file, "%v %v\n", key, result)
 	if err != nil {
 		return errors.Wrap(err, "file write error")
@@ -232,7 +235,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		// WIP: handle ending better
 		log.Fatal("dialing:", err)
 	}
 	defer c.Close()
