@@ -4,8 +4,8 @@
 # map-reduce tests
 #
 
-set -v
-set -x
+#set -v
+#set -x
 
 CURRENT_PATH="$PWD"
 MRAPPS_PATH="$CURRENT_PATH/../mrapps"
@@ -118,8 +118,6 @@ fi
 
 # wait for remaining workers and coordinator to exit.
 wait
-
-exit 0
 
 #########################################################
 # now indexer

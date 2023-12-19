@@ -2,10 +2,10 @@ package mr
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -167,7 +167,9 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
-	return errors.New("idle task not found and c.Done() is false")
+	// WIP: FIXME: this was called. why? debug
+	log.Print("no idle task found. all are in progress")
+	return nil
 }
 
 func (c *Coordinator) shuffleIntermediateData() {
@@ -201,7 +203,7 @@ func (c *Coordinator) shuffleIntermediateData() {
 		bucket := make([]KeyValue, 0, bucketSize)
 
 		initialJ := i + bucketSize
-		j := initialJ
+		j := min(initialJ, len(intermediateData))
 		for j < len(intermediateData) && intermediateData[j].Key == intermediateData[initialJ].Key {
 			j += 1
 		}
@@ -444,9 +446,11 @@ func setupLogging(kind string) {
 		log.Fatal(err)
 	}
 
+	randNumber := rand.Int()
+
 	logFileTime := time.Now().Format("2006_01_02_15_04_05")
 
-	logFileName := fmt.Sprintf("%s.log", logFileTime)
+	logFileName := fmt.Sprintf("%s_%d.log", logFileTime, randNumber)
 	logFilePath := filepath.Join(logFolderPath, logFileName)
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -455,7 +459,7 @@ func setupLogging(kind string) {
 
 	log.SetFlags(log.Lshortfile | log.Ltime)
 
-	multiWriter := io.MultiWriter(logFile, os.Stdout)
+	multiWriter := io.MultiWriter(logFile) // os.Stdout
 	log.SetOutput(multiWriter)
 }
 
