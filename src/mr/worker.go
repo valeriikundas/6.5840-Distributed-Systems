@@ -124,7 +124,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				var values []string
 				for k := i; k < j; k++ {
-					values = append(values, keyValue.Value)
+					values = append(values, keyValues[k].Value)
 				}
 
 				result := reducef(keyValue.Key, values)
