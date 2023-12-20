@@ -129,6 +129,10 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
+	// todo: should it be wrapped with mutex lock?
+	// todo: this code block runs multiple times (for each task request), but
+	// one is enough. can refactor to extra process in coordinator that checks
+	// for map and reduce tasks completeness, timeouts and shuffling data
 	for {
 		debug("waiting for map tasks to be done")
 		done := true
@@ -144,11 +148,6 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		}
 		time.Sleep(time.Second)
 	}
-
-	//next: shuffle is starting when map files are not ready yet, why?
-	// ok, so there's no idle task, but that doesn't mean all tasks are done
-	// - [ ] should wait for all map tasks to be done here
-	// - [ ] same for reduce tasks a bit lower
 
 	//fixme: recall on mutexes usage, are there problems with concurrency here?
 	c.mu.Lock()
@@ -180,6 +179,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
+	// todo: should it be wrapped with mutex lock?
 	for {
 		debug("waiting for reduce tasks to be done")
 		done := true
@@ -207,6 +207,8 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	}
 
 	log.Print("no idle task found. all are in progress")
+	// todo: probably better to send special signal that will have a meaning of
+	// maps done / reduces done / all are in progress
 	return nil
 }
 
@@ -459,7 +461,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &c
 }
 
-const debugEnabled = false
+const debugEnabled = true
 
 func debug(format string, v ...any) {
 	if !debugEnabled {
