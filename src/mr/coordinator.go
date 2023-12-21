@@ -211,7 +211,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	if err != nil {
 		log.Fatal(err)
 	}
-	debug("direntries=%#v", dirEntries)
+	debug("direntries=%+v", dirEntries)
 
 	for _, entry := range dirEntries {
 		if !strings.HasPrefix(entry.Name(), "mr-temp-out") {
@@ -231,8 +231,9 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		}
 	}
 
-	debug("renaming temp reduce files to final versions")
+	// next: this code is not getting called. why?
 	c.mu.Lock()
+	debug("c.renamedTempReduceFiles = true")
 	c.renamedTempReduceFiles = true
 	c.mu.Unlock()
 	// fixme: should move many code from TaskRequest to separate process in coordinator
@@ -278,11 +279,8 @@ func (c *Coordinator) shuffleIntermediateData() {
 
 	sort.Sort(ByKey(intermediateData))
 
-	debug("intermediateData=%v", intermediateData)
-
 	bucketID := 0
 	bucketSize := len(intermediateData) / c.nReduce // todo: probably can `divide by len(c.mapTasks) additionally`
-	debug("bucketSize=%v", bucketSize)
 	for i := 0; i < len(intermediateData); {
 		bucket := make([]KeyValue, 0, bucketSize)
 
@@ -294,7 +292,6 @@ func (c *Coordinator) shuffleIntermediateData() {
 
 		bucket = append(bucket, intermediateData[i:j]...)
 
-		debug("*** bucket indices: %v %v len=%v", i, j, len(intermediateData))
 		log.Printf("bucket indices %d %d", i, j)
 
 		name := fmt.Sprintf("mr-sorted-%d.json", bucketID)

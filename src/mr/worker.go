@@ -45,7 +45,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	setupLogging("worker")
 
 	if _, err := os.Stat(TempDir); os.IsNotExist(err) {
-		err = os.MkdirAll(TempDir, 0744)
+		err = os.MkdirAll(TempDir, 0666)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -69,6 +69,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		if task.StartTime == 0 {
 			log.Fatalf("task=%+v\n", task)
 		}
+		debug("switch task.TaskType")
 		switch task.TaskType {
 		case Map:
 			log.Printf("worker received MAP task, id=%d, key=%s, file=%s len(contents)=%d\n",
@@ -141,10 +142,9 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 
 				tempReduceFilePath := filepath.Join(TempDir, tempReduceFileName)
-				debug("tempReduceFilePath=%v", tempReduceFilePath)
 				err = appendReduceFile(tempReduceFilePath, keyValue.Key, result)
 				if err != nil {
-					log.Fatal(err)
+					log.Fatal("1. what is going on?", err)
 				}
 			}
 		}
@@ -198,10 +198,10 @@ func CallTaskRequest() *Task {
 	ok := call("Coordinator.TaskRequest", &args, &task)
 	if ok {
 		return &task
-	} else {
-		log.Print("rpc call failed")
-		return nil
 	}
+
+	log.Printf("rpc call failed, args=%+v, task=%+v", args, task)
+	return nil
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -248,6 +248,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	log.Print("rpc client call error: ", err)
+	log.Printf("rpc client call error, args=%+v, reply=%+v, err=%v\n", args, reply, err)
 	return false
 }
