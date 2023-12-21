@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -61,7 +60,11 @@ func (r ReduceTask) didTimeout() bool {
 }
 
 func (r ReduceTask) getOutputFilePath() string {
-	return getReduceFileName(r.id)
+	return getExistingTempReduceFileName(r.id)
+}
+
+func getExistingTempReduceFileName(taskID int) string {
+	return filepath.Join(TempDir, fmt.Sprintf("mr-temp-out-%d", taskID))
 }
 
 func (r ReduceTask) markIdle(c *Coordinator, i int) {
@@ -92,8 +95,9 @@ type Coordinator struct {
 	mapTasks    []MapTask
 	reduceTasks []ReduceTask
 
-	nReduce      int
-	shuffleState ShuffleState
+	nReduce                int
+	shuffleState           ShuffleState
+	renamedTempReduceFiles bool
 }
 
 type ByKey []KeyValue
@@ -159,6 +163,8 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	}
 	c.mu.Unlock()
 
+	// fixme: lock unlock looks strange, will be fixed when above code moved to separate goroutine
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	task, i = c.getIdleReduceTask()
@@ -198,6 +204,39 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		time.Sleep(time.Second)
 	}
 
+	// next: this is not getting called. why?
+	debug("rename")
+	log.Print("renaming final reduce file versions...")
+	dirEntries, err := os.ReadDir(TempDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	debug("direntries=%#v", dirEntries)
+
+	for _, entry := range dirEntries {
+		if !strings.HasPrefix(entry.Name(), "mr-temp-out") {
+			continue
+		}
+
+		oldPath := filepath.Join(TempDir, entry.Name())
+
+		newName := strings.Replace(entry.Name(), "-temp", "", 1)
+		newPath := filepath.Join(TempDir, newName)
+
+		debug("rename reduce file: %v to %v", oldPath, newPath)
+
+		err := os.Rename(oldPath, newPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	debug("renaming temp reduce files to final versions")
+	c.mu.Lock()
+	c.renamedTempReduceFiles = true
+	c.mu.Unlock()
+	// fixme: should move many code from TaskRequest to separate process in coordinator
+
 	// fixme: next line is not printed out. why?
 	debug("afterwards: reduce tasks done")
 	log.Print("all reduce tasks are done")
@@ -228,7 +267,7 @@ func (c *Coordinator) shuffleIntermediateData() {
 			continue
 		}
 
-		filepath := path.Join(TempDir, name)
+		filepath := filepath.Join(TempDir, name)
 		v, err := readJSONFile[[]KeyValue](filepath)
 		if err != nil {
 			log.Fatal(err)
@@ -261,7 +300,7 @@ func (c *Coordinator) shuffleIntermediateData() {
 		name := fmt.Sprintf("mr-sorted-%d.json", bucketID)
 		bucketID += 1
 
-		filepath := path.Join(TempDir, name)
+		filepath := filepath.Join(TempDir, name)
 		file, err := os.Create(filepath)
 		if err != nil {
 			log.Fatal(err)
@@ -369,11 +408,6 @@ func (c *Coordinator) Done() bool {
 	}
 	log.Println("Map tasks are done")
 
-	reduceTasksCompletion := make([]bool, len(c.reduceTasks))
-	for i, task := range c.reduceTasks {
-		reduceTasksCompletion[i] = task.state == TaskStateCompleted
-	}
-
 	for _, task := range c.reduceTasks {
 		if task.state != TaskStateCompleted {
 			log.Println("Reduce tasks are not done")
@@ -381,6 +415,15 @@ func (c *Coordinator) Done() bool {
 		}
 	}
 	log.Println("Reduce tasks are done")
+	debug("c.renamedTempReduceFiles=%v", c.renamedTempReduceFiles)
+
+	if !c.renamedTempReduceFiles {
+		log.Printf("has not renamed temp reduce files to final names")
+		return false
+	}
+
+	log.Print("log done bye")
+	debug("i'm done. bye..")
 
 	return true
 }
@@ -468,7 +511,17 @@ func debug(format string, v ...any) {
 		return
 	}
 
-	fmt.Printf(fmt.Sprintf("DEBUG: %s\n", format), v...)
+	formatString := fmt.Sprintf("DEBUG: %s", format)
+	err := log.Output(2, fmt.Sprintf(formatString, v...))
+	must(err)
+
+	//fmt.Printf(fmt.Sprintf("DEBUG: %s\n", format), v...)
+}
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
 
 func setupLogging(kind string) {
@@ -493,7 +546,13 @@ func setupLogging(kind string) {
 
 	log.SetFlags(log.Lshortfile | log.Ltime)
 
-	multiWriter := io.MultiWriter(logFile) // os.Stdout
+	logWriters := []io.Writer{logFile}
+
+	if debugEnabled {
+		logWriters = append(logWriters, os.Stdout)
+	}
+
+	multiWriter := io.MultiWriter(logWriters...)
 	log.SetOutput(multiWriter)
 }
 
@@ -587,7 +646,7 @@ func getIntermediateFilePath(id int, file string, nReduce int) string {
 	//reduceTaskID := ihash(file) % nReduce
 
 	filename := fmt.Sprintf("mr-int-%d-%d.json", mapTaskID, reduceTaskID)
-	filePath := path.Join(TempDir, filename)
+	filePath := filepath.Join(TempDir, filename)
 	return filePath
 }
 

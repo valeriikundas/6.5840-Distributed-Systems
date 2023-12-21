@@ -10,8 +10,7 @@ import (
 	"math/rand"
 	"net/rpc"
 	"os"
-	"path"
-	filepathLib "path/filepath"
+	"path/filepath"
 	"time"
 )
 
@@ -98,10 +97,10 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			taskID := task.ID
 
-			filepath := path.Join(TempDir, fmt.Sprintf("mr-sorted-%d.json", taskID))
-			file, err := os.Open(filepath)
+			filePath := filepath.Join(TempDir, fmt.Sprintf("mr-sorted-%d.json", taskID))
+			file, err := os.Open(filePath)
 			if err != nil {
-				slog.Debug("open file error", "error", err, "filepath", filepath)
+				slog.Debug("open file error", "error", err, "filepath", filePath)
 				log.Fatal(err)
 			}
 
@@ -133,33 +132,40 @@ func Worker(mapf func(string, string) []KeyValue,
 				//fixme: refactor to write to file once
 				//buffer.WriteString(fmt.Sprintf("%v %v", keyValue.Key, result))
 
-				reduceFilePath := getReduceFileName(task.ID)
-
-				if keyValue.Key != "" {
-					err = appendReduceFile(reduceFilePath, keyValue.Key, result)
-					if err != nil {
-						log.Fatal(err)
-					}
-				}
+				tempReduceFileName := getTempReduceFileName(task.ID)
 
 				i = j
-			}
 
+				if keyValue.Key == "" {
+					continue
+				}
+
+				tempReduceFilePath := filepath.Join(TempDir, tempReduceFileName)
+				debug("tempReduceFilePath=%v", tempReduceFilePath)
+				err = appendReduceFile(tempReduceFilePath, keyValue.Key, result)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
 		}
 
 		time.Sleep(time.Second)
 	}
 }
 
-func getReduceFileName(taskID int) string {
-	outputName := fmt.Sprintf("mr-out-%d", taskID)
-	//outputPath := path.Join("..", outputName)
+func getFinalReduceFileName(taskID string) string {
+	outputName := fmt.Sprintf("mr-out-%s", taskID)
+	//outputPath := filepath.Join("..", outputName)
 	outputPath := outputName
 	return outputPath
 }
 
-func appendReduceFile(filepath string, key string, result string) error {
-	absoluteFilePath, err := filepathLib.Abs(filepath)
+func getTempReduceFileName(taskID int) string {
+	return fmt.Sprintf("mr-temp-out-%d", taskID)
+}
+
+func appendReduceFile(filePath string, key string, result string) error {
+	absoluteFilePath, err := filepath.Abs(filePath)
 	if err != nil {
 		return err
 	}
@@ -176,8 +182,6 @@ func appendReduceFile(filepath string, key string, result string) error {
 			log.Fatal(err)
 		}
 	}()
-
-	debug("appendReduceFile: %v %v %v", filepath, key, result)
 
 	_, err = fmt.Fprintf(file, "%v %v\n", key, result)
 	if err != nil {
@@ -244,6 +248,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	log.Print("rpc client call error", err)
+	log.Print("rpc client call error: ", err)
 	return false
 }
