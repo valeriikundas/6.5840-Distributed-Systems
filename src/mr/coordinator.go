@@ -166,7 +166,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	// fixme: lock unlock looks strange, will be fixed when above code moved to separate goroutine
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	// todo: why is lock added here?
 	task, i = c.getIdleReduceTask()
 	if task != nil {
 		response.ID = task.ID
@@ -182,8 +182,10 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		c.reduceTasks[i].state = TaskStateInProgress
 		c.reduceTasks[i].startTime = startTime
 
+		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
 
 	// todo: should it be wrapped with mutex lock?
 	for {
@@ -243,6 +245,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	log.Print("all reduce tasks are done")
 
 	if c.Done() {
+		debug("return nil")
 		return nil
 	}
 
