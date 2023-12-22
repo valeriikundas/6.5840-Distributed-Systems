@@ -69,7 +69,6 @@ func Worker(mapf func(string, string) []KeyValue,
 		if task.StartTime == 0 {
 			log.Fatalf("task=%+v\n", task)
 		}
-		debug("switch task.TaskType")
 		switch task.TaskType {
 		case Map:
 			log.Printf("worker received MAP task, id=%d, key=%s, file=%s len(contents)=%d\n",
@@ -133,10 +132,14 @@ func Worker(mapf func(string, string) []KeyValue,
 				//fixme: refactor to write to file once
 				//buffer.WriteString(fmt.Sprintf("%v %v", keyValue.Key, result))
 
+				// todo: reduce task should create files similar to intermediate files e.g.
+				// mr-temp-out-1-5, where numbers are reduce task id and map task id, task
+				// completeness is when all this file exist
 				tempReduceFileName := getTempReduceFileName(task.ID)
 
 				i = j
 
+				// todo: look into if it can be deleted
 				if keyValue.Key == "" {
 					continue
 				}
@@ -144,7 +147,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				tempReduceFilePath := filepath.Join(TempDir, tempReduceFileName)
 				err = appendReduceFile(tempReduceFilePath, keyValue.Key, result)
 				if err != nil {
-					log.Fatal("1. what is going on?", err)
+					log.Fatal(err)
 				}
 			}
 		}

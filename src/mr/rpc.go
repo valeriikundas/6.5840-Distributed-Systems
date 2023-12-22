@@ -36,6 +36,7 @@ const (
 type Args struct{}
 
 // TODO: should be broken down into map and reduce structs?
+// fixme: can be deleted, not super useful, use ITask instead
 type Task struct {
 	ID        int
 	TaskType  TaskType

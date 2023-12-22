@@ -3,6 +3,7 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sasha-s/go-deadlock"
 	"io"
 	"log"
 	"math/rand"
@@ -14,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -41,6 +41,19 @@ type MapTask struct {
 	nReduce int
 }
 
+func (t MapTask) checkDone() bool {
+	outputFilepath := t.getOutputFilePath()
+	_, err := os.Stat(outputFilepath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false
+		} else {
+			log.Fatalf("error checking file %s. details: %s", outputFilepath, err)
+		}
+	}
+	return true
+}
+
 type ReduceTask struct {
 	id        int
 	state     TaskState
@@ -49,6 +62,21 @@ type ReduceTask struct {
 	key string
 
 	nReduce int
+}
+
+func (t ReduceTask) checkDone() bool {
+	// todo: when reduce files are split, this will have to be adjusted to check all
+	// files existence
+	outputFilepath := t.getOutputFilePath()
+	_, err := os.Stat(outputFilepath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false
+		} else {
+			log.Fatalf("error checking file %s. details: %s", outputFilepath, err)
+		}
+	}
+	return true
 }
 
 func (r ReduceTask) isInProgress() bool {
@@ -60,11 +88,11 @@ func (r ReduceTask) didTimeout() bool {
 }
 
 func (r ReduceTask) getOutputFilePath() string {
-	return getExistingTempReduceFileName(r.id)
+	return getExistingTempReduceFilePath(r.id)
 }
 
-func getExistingTempReduceFileName(taskID int) string {
-	return filepath.Join(TempDir, fmt.Sprintf("mr-temp-out-%d", taskID))
+func getExistingTempReduceFilePath(taskID int) string {
+	return filepath.Join(TempDir, getTempReduceFileName(taskID))
 }
 
 func (r ReduceTask) markIdle(c *Coordinator, i int) {
@@ -91,7 +119,7 @@ const (
 type Coordinator struct {
 	// Your definitions here.
 
-	mu          sync.Mutex
+	mu          deadlock.Mutex
 	mapTasks    []MapTask
 	reduceTasks []ReduceTask
 
@@ -133,35 +161,10 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
-	// todo: should it be wrapped with mutex lock?
-	// todo: this code block runs multiple times (for each task request), but
-	// one is enough. can refactor to extra process in coordinator that checks
-	// for map and reduce tasks completeness, timeouts and shuffling data
-	for {
-		debug("waiting for map tasks to be done")
-		done := true
-		for _, mapTask := range c.mapTasks {
-			if mapTask.state != TaskStateCompleted {
-				done = false
-				break
-			}
-		}
-		if done {
-			debug("all map tasks are done")
-			break
-		}
+	for c.shuffleState != ShuffleStateDone {
+		debug("maps done, shuffle is not")
 		time.Sleep(time.Second)
 	}
-
-	//fixme: recall on mutexes usage, are there problems with concurrency here?
-	c.mu.Lock()
-	if c.shuffleState == ShuffleStateNotStarted {
-		c.shuffleState = ShuffleStateStarted
-
-		c.shuffleIntermediateData()
-		c.shuffleState = ShuffleStateDone
-	}
-	c.mu.Unlock()
 
 	// fixme: lock unlock looks strange, will be fixed when above code moved to separate goroutine
 
@@ -187,62 +190,8 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	}
 	c.mu.Unlock()
 
-	// todo: should it be wrapped with mutex lock?
-	for {
-		debug("waiting for reduce tasks to be done")
-		done := true
-		for _, reduceTask := range c.reduceTasks {
-			if reduceTask.state != TaskStateCompleted {
-				done = false
-				break
-			}
-		}
-		debug("check if done")
-		if done {
-			debug("all reduce tasks are done")
-			break
-		}
-		debug("time sleep")
-		time.Sleep(time.Second)
-	}
-
-	// next: this is not getting called. why?
-	debug("rename")
-	log.Print("renaming final reduce file versions...")
-	dirEntries, err := os.ReadDir(TempDir)
-	if err != nil {
-		log.Fatal(err)
-	}
-	debug("direntries=%+v", dirEntries)
-
-	for _, entry := range dirEntries {
-		if !strings.HasPrefix(entry.Name(), "mr-temp-out") {
-			continue
-		}
-
-		oldPath := filepath.Join(TempDir, entry.Name())
-
-		newName := strings.Replace(entry.Name(), "-temp", "", 1)
-		newPath := filepath.Join(TempDir, newName)
-
-		debug("rename reduce file: %v to %v", oldPath, newPath)
-
-		err := os.Rename(oldPath, newPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	// next: this code is not getting called. why?
-	c.mu.Lock()
-	debug("c.renamedTempReduceFiles = true")
-	c.renamedTempReduceFiles = true
-	c.mu.Unlock()
-	// fixme: should move many code from TaskRequest to separate process in coordinator
-
 	// fixme: next line is not printed out. why?
 	debug("afterwards: reduce tasks done")
-	log.Print("all reduce tasks are done")
 
 	if c.Done() {
 		debug("return nil")
@@ -408,9 +357,11 @@ func (c *Coordinator) Done() bool {
 	}
 	log.Println("Map tasks are done")
 
-	for _, task := range c.reduceTasks {
+	debug("c.shuffleState=%s", c.shuffleState)
+
+	for i, task := range c.reduceTasks {
 		if task.state != TaskStateCompleted {
-			log.Println("Reduce tasks are not done")
+			log.Printf("Reduce tasks are not done: %v of %v", i, len(c.reduceTasks))
 			return false
 		}
 	}
@@ -422,7 +373,6 @@ func (c *Coordinator) Done() bool {
 		return false
 	}
 
-	log.Print("log done bye")
 	debug("i'm done. bye..")
 
 	return true
@@ -451,25 +401,17 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			log.Fatalf("error opening file. details: %s", err)
 		}
 
-		contents := string(bytes)
-
-		// todo: should lock here?
 		c.mapTasks = append(c.mapTasks, MapTask{
 			id:       getNextID(),
 			state:    TaskStateIdle,
 			file:     file,
-			contents: contents,
+			contents: string(bytes),
 			nReduce:  nReduce,
 		})
 	}
 
 	c.nReduce = nReduce
 
-	/*
-		create reduce tasks
-		amount = nReduce
-		filter by file name
-	*/
 	for i := 0; i < nReduce; i += 1 {
 		reduceKey := strconv.Itoa(i)
 		c.reduceTasks = append(c.reduceTasks, ReduceTask{
@@ -481,20 +423,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		})
 	}
 
-	// goroutine for checking timed out and done tasks
-	go func() {
-		for {
-			for i, t := range c.mapTasks {
-				checkTimeout(&c, t, i)
-			}
-
-			for i, t := range c.reduceTasks {
-				checkTimeout(&c, t, i)
-			}
-
-			time.Sleep(time.Second)
-		}
-	}()
+	go c.runControlFlow()
 
 	// TODO: check that timeouts work
 
@@ -502,6 +431,98 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.server()
 
 	return &c
+}
+
+func (c *Coordinator) runControlFlow() {
+	debug("RUN GO FUNC")
+
+	iter := 0
+
+	for {
+		debug("RUN FOR LOOP ITER %v", iter)
+		iter++
+
+		// fixme: move this lower, check timeout after done check
+		for i, t := range c.mapTasks {
+			checkTaskStatus(c, t, i)
+		}
+
+		for i, t := range c.reduceTasks {
+			checkTaskStatus(c, t, i)
+		}
+
+		// todo: should it be wrapped with mutex lock?
+		mapsDone := c.areMapsDone()
+		if mapsDone {
+			debug("all map tasks are done")
+
+			// fixme: shuffleState seems not needed now
+			if c.shuffleState == ShuffleStateNotStarted {
+				c.shuffleState = ShuffleStateStarted
+				c.shuffleIntermediateData()
+				c.shuffleState = ShuffleStateDone
+			}
+		}
+
+		reducesDone := c.areReducesDone()
+		if reducesDone {
+			debug("all reduce tasks are done")
+
+			if !c.renamedTempReduceFiles {
+				log.Print("renaming final reduce file versions...")
+				renameTempReduceFiles()
+
+				debug("c.renamedTempReduceFiles = true")
+				c.renamedTempReduceFiles = true
+			}
+		}
+
+		time.Sleep(time.Second)
+	}
+}
+
+func (c *Coordinator) areReducesDone() bool {
+	for _, reduceTask := range c.reduceTasks {
+		if reduceTask.state != TaskStateCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Coordinator) areMapsDone() bool {
+	for _, mapTask := range c.mapTasks {
+		if mapTask.state != TaskStateCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func renameTempReduceFiles() {
+	dirEntries, err := os.ReadDir(TempDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	debug("direntries=%+v", dirEntries)
+
+	for _, entry := range dirEntries {
+		if !strings.HasPrefix(entry.Name(), "mr-temp-out") {
+			continue
+		}
+
+		oldPath := filepath.Join(TempDir, entry.Name())
+
+		newName := strings.Replace(entry.Name(), "-temp", "", 1)
+		newPath := filepath.Join(TempDir, newName)
+
+		debug("rename reduce file: %v to %v", oldPath, newPath)
+
+		err := os.Rename(oldPath, newPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }
 
 const debugEnabled = true
@@ -561,6 +582,7 @@ type ITask interface {
 	isInProgress() bool
 	didTimeout() bool
 	getOutputFilePath() string
+	checkDone() bool
 	markIdle(c *Coordinator, i int)
 	markDone(c *Coordinator, i int)
 }
@@ -596,7 +618,7 @@ func (t MapTask) markDone(c *Coordinator, i int) {
 	c.mu.Unlock()
 }
 
-func checkTimeout[T ITask](c *Coordinator, t T, i int) {
+func checkTaskStatus[T ITask](c *Coordinator, t T, i int) {
 	if t.isInProgress() {
 		taskTimedOut := t.didTimeout()
 		if taskTimedOut {
@@ -604,19 +626,9 @@ func checkTimeout[T ITask](c *Coordinator, t T, i int) {
 			return
 		}
 
-		outputFilepath := t.getOutputFilePath()
-		_, err := os.Stat(outputFilepath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				log.Printf("Reduce file does not exist, so task is not finished")
-			} else {
-				log.Printf("error checking file %s. details: %s", outputFilepath, err)
-			}
-
-			return
+		if t.checkDone() {
+			t.markDone(c, i)
 		}
-
-		t.markDone(c, i)
 	}
 }
 
