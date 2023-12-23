@@ -10,6 +10,7 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -120,6 +121,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			// todo: write to file once
 			// buffer := new(bytes.Buffer)
 
+			//fixme: use buffer
+			builder := strings.Builder{}
+
 			i := 0
 			for i < len(keyValues) {
 				keyValue := keyValues[i]
@@ -135,14 +139,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				result := reducef(keyValue.Key, values)
 
-				//fixme: refactor to write to file once
-				//buffer.WriteString(fmt.Sprintf("%v %v", keyValue.Key, result))
-
-				// todo: reduce task should create files similar to intermediate files e.g.
-				// mr-temp-out-1-5, where numbers are reduce task id and map task id, task
-				// completeness is when all this file exist
-				tempReduceFileName := getTempReduceFileName(task.ID)
-
 				i = j
 
 				// todo: look into if it can be deleted
@@ -150,11 +146,18 @@ func Worker(mapf func(string, string) []KeyValue,
 					continue
 				}
 
-				tempReduceFilePath := filepath.Join(TempDir, tempReduceFileName)
-				err = appendReduceFile(tempReduceFilePath, keyValue.Key, result)
-				if err != nil {
-					log.Fatal(fmt.Errorf("appendReduceFile error: %w", err))
-				}
+				builder.WriteString(fmt.Sprintf("%v %v\n", keyValue.Key, result))
+			}
+
+			// todo: reduce task should create files similar to intermediate files e.g.
+			// mr-temp-out-1-5, where numbers are reduce task id and map task id, task
+			// completeness is when all this file exist
+			tempReduceFileName := getTempReduceFileName(taskID)
+
+			tempReduceFilePath := filepath.Join(TempDir, tempReduceFileName)
+			err = writeReduceFile(tempReduceFilePath, builder.String())
+			if err != nil {
+				log.Fatal(fmt.Errorf("writeReduceFile error: %w", err))
 			}
 		}
 
@@ -173,7 +176,7 @@ func getTempReduceFileName(taskID int) string {
 	return fmt.Sprintf("mr-temp-out-%d", taskID)
 }
 
-func appendReduceFile(filePath string, key string, result string) error {
+func writeReduceFile(filePath string, content string) error {
 	absoluteFilePath, err := filepath.Abs(filePath)
 	if err != nil {
 		return err
@@ -192,7 +195,7 @@ func appendReduceFile(filePath string, key string, result string) error {
 		}
 	}()
 
-	_, err = fmt.Fprintf(file, "%v %v\n", key, result)
+	_, err = fmt.Fprint(file, content)
 	if err != nil {
 		return errors.Wrap(err, "file write error")
 	}

@@ -398,7 +398,7 @@ func (c *Coordinator) Done() bool {
 	}
 
 	if !c.renamedTempReduceFiles {
-		log.Printf("has not renamed temp reduce files to final names")
+		debug("has not renamed temp reduce files to final names")
 		return false
 	}
 
@@ -558,7 +558,7 @@ func renameTempReduceFiles() {
 	}
 }
 
-const debugEnabled = false
+const debugEnabled = true
 const stdoutLogEnabled = false
 
 func debug(format string, v ...any) {
