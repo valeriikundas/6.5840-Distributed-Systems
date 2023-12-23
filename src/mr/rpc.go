@@ -31,6 +31,7 @@ type TaskType int
 const (
 	Map TaskType = iota
 	Reduce
+	EndSignal
 )
 
 type Args struct{}
@@ -61,6 +62,10 @@ func (t *Task) IsZero() bool {
 		t.ReduceKey == "" &&
 		// t.ReduceValues == nil &&
 		t.NReduce == 0
+}
+
+func (t *Task) IsEndSignal() bool {
+	return t.TaskType == EndSignal
 }
 
 // Cook up a unique-ish UNIX-domain socket name

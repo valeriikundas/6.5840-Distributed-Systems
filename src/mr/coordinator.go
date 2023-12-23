@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/sasha-s/go-deadlock"
@@ -25,7 +26,8 @@ const TempDir = "/Users/user/Code/courses/distrubuted_systems_6.5840/src/main/mr
 type TaskState int
 
 const (
-	TaskStateIdle TaskState = iota
+	TaskStateUndefined TaskState = iota
+	TaskStateIdle
 	TaskStateInProgress
 	TaskStateCompleted
 )
@@ -142,6 +144,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	// FIXME: feels awkward to pass position, think if it's ok
 	task, i := c.getIdleMapTask()
 	if task != nil {
+		// fixme: rewrite with *response=Task{...}
 		response.ID = task.ID
 		response.TaskType = Map
 		response.StartTime = startTime.UnixMicro()
@@ -161,9 +164,14 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 		return nil
 	}
 
+	if !c.areMapsDone() {
+		response = nil
+		return nil
+	}
+
 	for c.shuffleState != ShuffleStateDone {
 		debug("maps done, shuffle is not")
-		time.Sleep(time.Second)
+		return nil
 	}
 
 	// fixme: lock unlock looks strange, will be fixed when above code moved to separate goroutine
@@ -190,17 +198,22 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	}
 	c.mu.Unlock()
 
-	// fixme: next line is not printed out. why?
-	debug("afterwards: reduce tasks done")
-
-	if c.Done() {
-		debug("return nil")
+	if !c.areReducesDone() {
+		response = nil
 		return nil
 	}
 
-	log.Print("no idle task found. all are in progress")
+	if c.Done() {
+		*response = Task{
+			TaskType:  EndSignal,
+			StartTime: startTime.UnixMicro(),
+		}
+		return nil
+	}
+
 	// todo: probably better to send special signal that will have a meaning of
 	// maps done / reduces done / all are in progress
+	response = &Task{}
 	return nil
 }
 
@@ -263,6 +276,14 @@ func (c *Coordinator) shuffleIntermediateData() {
 
 		i = j
 	}
+
+	if bucketID < len(c.reduceTasks) {
+		c.mu.Lock()
+		for i := bucketID; i < len(c.reduceTasks); i += 1 {
+			c.reduceTasks[i].state = TaskStateCompleted
+		}
+		c.mu.Unlock()
+	}
 }
 
 func readJSONFile[R any](filepath string) (*R, error) {
@@ -306,11 +327,21 @@ func (c *Coordinator) getIdleMapTask() (*Task, int) {
 func (c *Coordinator) getIdleReduceTask() (*Task, int) {
 	idleReduceTaskIndex := -1
 	for i := 0; i < len(c.reduceTasks); i += 1 {
+		if c.reduceTasks[i].state == TaskStateUndefined {
+			continue
+		}
 		if c.reduceTasks[i].state == TaskStateIdle {
 			idleReduceTaskIndex = i
 			break
 		}
 	}
+
+	b := strings.Builder{}
+	for _, task := range c.reduceTasks {
+		b.WriteString(fmt.Sprintf("%v-%v; ", task.key, task.state))
+	}
+	debug("get task: reduce status: %v", b.String())
+
 	if idleReduceTaskIndex != -1 {
 		reduceTask := c.reduceTasks[idleReduceTaskIndex]
 		return &Task{
@@ -355,25 +386,21 @@ func (c *Coordinator) Done() bool {
 			return false
 		}
 	}
-	log.Println("Map tasks are done")
-
-	debug("c.shuffleState=%s", c.shuffleState)
 
 	for i, task := range c.reduceTasks {
+		if task.state == TaskStateUndefined {
+			continue
+		}
 		if task.state != TaskStateCompleted {
 			log.Printf("Reduce tasks are not done: %v of %v", i, len(c.reduceTasks))
 			return false
 		}
 	}
-	log.Println("Reduce tasks are done")
-	debug("c.renamedTempReduceFiles=%v", c.renamedTempReduceFiles)
 
 	if !c.renamedTempReduceFiles {
 		log.Printf("has not renamed temp reduce files to final names")
 		return false
 	}
-
-	debug("i'm done. bye..")
 
 	return true
 }
@@ -412,6 +439,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c.nReduce = nReduce
 
+	// todo: reconsider creating reduce tasks here vs in controller goroutine
 	for i := 0; i < nReduce; i += 1 {
 		reduceKey := strconv.Itoa(i)
 		c.reduceTasks = append(c.reduceTasks, ReduceTask{
@@ -423,7 +451,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		})
 	}
 
-	go c.runControlFlow()
+	ctx := context.Background()
+	go c.runControlFlow(ctx)
 
 	// TODO: check that timeouts work
 
@@ -433,13 +462,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &c
 }
 
-func (c *Coordinator) runControlFlow() {
-	debug("RUN GO FUNC")
-
+func (c *Coordinator) runControlFlow(ctx context.Context) {
 	iter := 0
 
 	for {
-		debug("RUN FOR LOOP ITER %v", iter)
 		iter++
 
 		// fixme: move this lower, check timeout after done check
@@ -454,8 +480,6 @@ func (c *Coordinator) runControlFlow() {
 		// todo: should it be wrapped with mutex lock?
 		mapsDone := c.areMapsDone()
 		if mapsDone {
-			debug("all map tasks are done")
-
 			// fixme: shuffleState seems not needed now
 			if c.shuffleState == ShuffleStateNotStarted {
 				c.shuffleState = ShuffleStateStarted
@@ -463,6 +487,12 @@ func (c *Coordinator) runControlFlow() {
 				c.shuffleState = ShuffleStateDone
 			}
 		}
+
+		b := strings.Builder{}
+		for _, task := range c.reduceTasks {
+			b.WriteString(fmt.Sprintf("%v-%v; ", task.key, task.state))
+		}
+		debug("controller reduce status: %v", b.String())
 
 		reducesDone := c.areReducesDone()
 		if reducesDone {
@@ -483,6 +513,9 @@ func (c *Coordinator) runControlFlow() {
 
 func (c *Coordinator) areReducesDone() bool {
 	for _, reduceTask := range c.reduceTasks {
+		if reduceTask.state == TaskStateUndefined {
+			continue
+		}
 		if reduceTask.state != TaskStateCompleted {
 			return false
 		}
@@ -525,15 +558,15 @@ func renameTempReduceFiles() {
 	}
 }
 
-const debugEnabled = true
+const debugEnabled = false
+const stdoutLogEnabled = false
 
 func debug(format string, v ...any) {
 	if !debugEnabled {
 		return
 	}
 
-	formatString := fmt.Sprintf("DEBUG: %s", format)
-	err := log.Output(2, fmt.Sprintf(formatString, v...))
+	err := log.Output(2, fmt.Sprintf(format, v...))
 	must(err)
 
 	//fmt.Printf(fmt.Sprintf("DEBUG: %s\n", format), v...)
@@ -555,9 +588,7 @@ func setupLogging(kind string) {
 	}
 
 	randNumber := rand.Int()
-
 	logFileTime := time.Now().Format("2006_01_02_15_04_05")
-
 	logFileName := fmt.Sprintf("%s_%d.log", logFileTime, randNumber)
 	logFilePath := filepath.Join(logFolderPath, logFileName)
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -569,7 +600,7 @@ func setupLogging(kind string) {
 
 	logWriters := []io.Writer{logFile}
 
-	if debugEnabled {
+	if stdoutLogEnabled {
 		logWriters = append(logWriters, os.Stdout)
 	}
 

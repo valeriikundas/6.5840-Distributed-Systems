@@ -6,7 +6,6 @@ import (
 	errors "github.com/pkg/errors"
 	"hash/fnv"
 	"log"
-	"log/slog"
 	"math/rand"
 	"net/rpc"
 	"os"
@@ -61,14 +60,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		task := CallTaskRequest()
 		// fixme: task.isZero() condition probably can never happen. delete?
-		if task == nil || task.IsZero() {
-			// nil means all is done, exit
-			log.Print("empty task received -> exiting...")
+		if task.IsEndSignal() {
+			// end signal means all is done, exit
+			log.Print("end signal received -> worker exiting...")
 			return
 		}
-		if task.StartTime == 0 {
-			log.Fatalf("task=%+v\n", task)
+		if task == nil || task.IsZero() || task.StartTime == 0 {
+			log.Print("no task received -> worker sleeping...")
+			time.Sleep(time.Second)
+			continue
 		}
+
+		// todo: alternatively can have a done file that shows done status for all tasks
+		// so it's shared between controller and workers
+
 		switch task.TaskType {
 		case Map:
 			log.Printf("worker received MAP task, id=%d, key=%s, file=%s len(contents)=%d\n",
@@ -88,7 +93,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			err = os.WriteFile(filepath, bytes, 0644)
 			if err != nil {
-				log.Fatal(err)
+				log.Fatal(fmt.Errorf("error writing to file: %w", err))
 			}
 
 		case Reduce:
@@ -100,15 +105,16 @@ func Worker(mapf func(string, string) []KeyValue,
 			filePath := filepath.Join(TempDir, fmt.Sprintf("mr-sorted-%d.json", taskID))
 			file, err := os.Open(filePath)
 			if err != nil {
-				slog.Debug("open file error", "error", err, "filepath", filePath)
-				log.Fatal(err)
+				// no such task, skipping
+				log.Print(fmt.Errorf("error opening file: %w", err))
+				continue
 			}
 
 			fileDecoder := json.NewDecoder(file)
 			var keyValues []KeyValue
 			err = fileDecoder.Decode(&keyValues)
 			if err != nil {
-				log.Fatal(err)
+				log.Fatal(fmt.Errorf("error decoding json: %w", err))
 			}
 
 			// todo: write to file once
@@ -147,7 +153,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				tempReduceFilePath := filepath.Join(TempDir, tempReduceFileName)
 				err = appendReduceFile(tempReduceFilePath, keyValue.Key, result)
 				if err != nil {
-					log.Fatal(err)
+					log.Fatal(fmt.Errorf("appendReduceFile error: %w", err))
 				}
 			}
 		}

@@ -4,7 +4,7 @@
 # map-reduce tests
 #
 
-#set -v
+# print commands with arguments before executing
 #set -x
 
 CURRENT_PATH="$PWD"
