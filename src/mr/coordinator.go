@@ -142,6 +142,7 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	startTime := time.Now()
 
 	// FIXME: feels awkward to pass position, think if it's ok
+	c.mu.Lock()
 	task, i := c.getIdleMapTask()
 	if task != nil {
 		// fixme: rewrite with *response=Task{...}
@@ -156,13 +157,13 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 			"found idle map task: i=%d id=%d type=%d key=%s  file=%s\n",
 			i, response.ID, response.TaskType, response.ReduceKey, response.MapFile)
 
-		c.mu.Lock()
 		c.mapTasks[i].state = TaskStateInProgress
 		c.mapTasks[i].startTime = startTime
 		c.mu.Unlock()
 
 		return nil
 	}
+	c.mu.Unlock()
 
 	if !c.areMapsDone() {
 		response = nil
@@ -177,7 +178,6 @@ func (c *Coordinator) TaskRequest(args *Args, response *Task) error {
 	// fixme: lock unlock looks strange, will be fixed when above code moved to separate goroutine
 
 	c.mu.Lock()
-	// todo: why is lock added here?
 	task, i = c.getIdleReduceTask()
 	if task != nil {
 		response.ID = task.ID
@@ -537,7 +537,6 @@ func renameTempReduceFiles() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	debug("direntries=%+v", dirEntries)
 
 	for _, entry := range dirEntries {
 		if !strings.HasPrefix(entry.Name(), "mr-temp-out") {
@@ -558,7 +557,7 @@ func renameTempReduceFiles() {
 	}
 }
 
-const debugEnabled = true
+const debugEnabled = false
 const stdoutLogEnabled = false
 
 func debug(format string, v ...any) {
@@ -566,7 +565,9 @@ func debug(format string, v ...any) {
 		return
 	}
 
-	err := log.Output(2, fmt.Sprintf(format, v...))
+	msg := fmt.Sprintf(format, v...)
+	fmt.Sprint(msg)
+	err := log.Output(2, msg)
 	must(err)
 
 	//fmt.Printf(fmt.Sprintf("DEBUG: %s\n", format), v...)
