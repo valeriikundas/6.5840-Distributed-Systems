@@ -557,7 +557,7 @@ func renameTempReduceFiles() {
 	}
 }
 
-const debugEnabled = false
+const debugEnabled = true
 const stdoutLogEnabled = false
 
 func debug(format string, v ...any) {
