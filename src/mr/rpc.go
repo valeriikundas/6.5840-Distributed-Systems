@@ -6,8 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -24,6 +26,47 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type TaskType int
+
+const (
+	Map TaskType = iota
+	Reduce
+	EndSignal
+)
+
+type Args struct{}
+
+// TODO: should be broken down into map and reduce structs?
+// fixme: can be deleted, not super useful, use ITask instead
+type Task struct {
+	ID        int
+	TaskType  TaskType
+	StartTime int64 // FIXME: passing `nil` through json from rpc?
+
+	MapFile     string
+	MapContents string
+
+	ReduceKey string
+	// todo: will be populated on task call. is this ok?
+	// ReduceValues []string
+
+	NReduce int
+}
+
+func (t *Task) IsZero() bool {
+	return t.ID == 0 &&
+		t.TaskType == 0 &&
+		t.StartTime == 0 &&
+		t.MapFile == "" &&
+		t.MapContents == "" &&
+		t.ReduceKey == "" &&
+		// t.ReduceValues == nil &&
+		t.NReduce == 0
+}
+
+func (t *Task) IsEndSignal() bool {
+	return t.TaskType == EndSignal
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
